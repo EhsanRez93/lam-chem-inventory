@@ -180,6 +180,11 @@
     background:#1d2433;color:#fff;padding:10px 14px;border-radius:10px;font-size:13px;
     opacity:0;pointer-events:none;transition:opacity .15s;z-index:99}
   .toast.show{opacity:1}
+  .row-expiry-soon td { background: #fff8cc; }
+  .row-expired td { background: #fde8ec; }
+  .row-empty td { opacity: 0.55; }
+  .ghs-icons { display: flex; flex-wrap: wrap; gap: 3px; }
+  .ghs-icons img { width: 28px; height: 28px; border-radius: 4px; }
 
   @media (max-width:720px){
     .bar{flex-wrap:wrap}
@@ -345,6 +350,24 @@
         <div class="field"><label>Special notes / status</label>
           <input id="itemNotes" placeholder="e.g. opened 2026-04-12"/></div>
       </div>
+
+      <div class="field-row">
+        <div class="field"><label>Date received (optional)</label>
+          <input id="itemDateReceived" type="date"/></div>
+        <div class="field"><label>Expiry / retest date (optional)</label>
+          <input id="itemExpiryDate" type="date"/></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Container status</label>
+          <select id="itemContainerStatus">
+            <option value="">— unspecified —</option>
+            <option value="sealed">Sealed</option>
+            <option value="opened">Opened</option>
+            <option value="empty">Empty</option>
+          </select></div>
+        <div class="field"><label>SDS / datasheet link (optional)</label>
+          <input id="itemSdsUrl" placeholder="https://…"/></div>
+      </div>
     </div>
     <div class="foot">
       <button class="btn danger" id="deleteItemBtn" style="margin-right:auto;display:none">Delete</button>
@@ -400,6 +423,7 @@ let editingRoom = null;
 let editingCab  = null;
 let pendingImport = null;
 let scanner = null;
+let pendingGHS = null;
 
 function toggleEditMode(){
   editMode = !editMode;
@@ -425,7 +449,15 @@ function loadState(){
   }
   return { rooms: [] };
 }
-function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function saveState(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }catch(e){
+    if(e.name==="QuotaExceededError"||e.name==="NS_ERROR_DOM_QUOTA_REACHED"){
+      toast("Storage full — export your data to free up space.");
+    }
+  }
+}
 const uid = () => Math.random().toString(36).slice(2,10);
 
 /* ----------------------- helpers ----------------------- */
@@ -697,12 +729,17 @@ function viewItems(){
       el("th",{},"Name"),el("th",{},"CAS"),el("th",{},"State"),
       el("th",{},"Purity"),el("th",{},"Quantity"),
       el("th",{},"Supplier"),el("th",{},"Shelf / level"),
+      el("th",{},"Expiry"),el("th",{},"Status"),el("th",{},"SDS"),el("th",{},"GHS"),
       el("th",{style:"text-align:right"},""),
     ])
   ]);
   const tbody = el("tbody");
   for(const it of items){
-    tbody.append(el("tr",{},[
+    const now=new Date();
+    const exp=it.expiryDate?new Date(it.expiryDate):null;
+    const days=exp?(exp-now)/864e5:null;
+    const rowCls=it.containerStatus==="empty"?"row-empty":exp&&exp<now?"row-expired":days!==null&&days<90?"row-expiry-soon":"";
+    tbody.append(el("tr",{class:rowCls},[
       el("td",{},[
         el("div",{style:"font-weight:600"}, it.name || "(unnamed)"),
         it.notes ? el("div",{class:"hint",style:"margin-top:2px"}, it.notes) : null,
@@ -713,6 +750,10 @@ function viewItems(){
       el("td",{}, (it.amount!=null && it.amount!=="") ? `${it.amount} ${it.unit||""}`.trim() : "—"),
       el("td",{}, it.supplier || "—"),
       el("td",{}, it.shelf || "—"),
+      el("td",{}, it.expiryDate ? (exp&&exp<now?"⚠ "+it.expiryDate:it.expiryDate) : "—"),
+      el("td",{}, it.containerStatus ? it.containerStatus.charAt(0).toUpperCase()+it.containerStatus.slice(1) : "—"),
+      el("td",{}, it.sdsUrl ? el("a",{href:it.sdsUrl,target:"_blank",rel:"noopener noreferrer"},"SDS") : "—"),
+      el("td",{}, it.ghsPictograms?.length ? el("div",{class:"ghs-icons"},it.ghsPictograms.map(u=>el("img",{src:u,title:"GHS",loading:"lazy"}))) : "—"),
       el("td",{},[ el("div",{class:"row-actions"},[
         el("button",{class:"btn", onclick:()=>openEditItem(it.id)}, "Edit"),
         editMode ? el("button",{class:"btn danger", onclick:()=>{
@@ -1012,6 +1053,9 @@ function clearItemForm(){
   $("#lookupInput").value="";$("#itemName").value="";$("#itemCAS").value="";
   $("#itemPurity").value="";$("#itemAmount").value="";$("#itemSupplier").value="";
   $("#itemBarcode").value="";$("#itemNotes").value="";$("#itemShelf").value="";
+  $("#itemDateReceived").value=""; $("#itemExpiryDate").value="";
+  $("#itemContainerStatus").value=""; $("#itemSdsUrl").value="";
+  pendingGHS = null;
   setStateToggle(null);
   $("#deleteItemBtn").style.display="none";
   editing = null;
@@ -1048,6 +1092,11 @@ function openEditItem(itemId, ctx){
   $("#itemShelf").value = it.shelf||"";
   setStateToggle(it.state||null);
   if(it.unit){ $("#itemUnit").value = it.unit; }
+  $("#itemDateReceived").value = it.dateReceived||"";
+  $("#itemExpiryDate").value   = it.expiryDate||"";
+  $("#itemContainerStatus").value = it.containerStatus||"";
+  $("#itemSdsUrl").value       = it.sdsUrl||"";
+  pendingGHS = null;
   fillRoomSelect($("#itemRoom"), roomId);
   fillCabinetSelect($("#itemCabinet"), roomId, cabId);
   $("#deleteItemBtn").style.display = "";
@@ -1078,6 +1127,11 @@ $("#saveItem").addEventListener("click",()=>{
     shelf:   $("#itemShelf").value.trim(),
     barcode: $("#itemBarcode").value.trim(),
     notes:   $("#itemNotes").value.trim(),
+    dateReceived:    $("#itemDateReceived").value || null,
+    expiryDate:      $("#itemExpiryDate").value   || null,
+    containerStatus: $("#itemContainerStatus").value || null,
+    sdsUrl:          $("#itemSdsUrl").value.trim() || null,
+    ghsPictograms:   pendingGHS !== null ? pendingGHS : (editing ? (()=>{ const r=findItem(editing.roomId,editing.cabId,editing.itemId); return r?.ghsPictograms||[]; })() : []),
     updated: new Date().toISOString(),
   };
   if(!data.name && !data.cas){ toast("Need a name or CAS"); return; }
@@ -1146,7 +1200,23 @@ async function pubchemLookup(query){
       else if(/colorless\s+gas|gas\b/.test(txt)) phystate = "gas";
     }catch(_){}
   }
-  return { cid, name: displayName, cas, state: phystate, formula: props.MolecularFormula, mw: props.MolecularWeight };
+  let ghsPictograms = [];
+  try{
+    const gj = await jget(`https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/${cid}/JSON?heading=GHS+Classification`);
+    const sections = gj?.Record?.Section ?? [];
+    for(const s of sections){
+      for(const sub of s.Section ?? []){
+        for(const info of sub.Information ?? []){
+          for(const v of info.Value?.StringWithMarkup ?? []){
+            for(const m of v.Markup ?? []){
+              if(m.Type==="Icon" && m.URL && !ghsPictograms.includes(m.URL)) ghsPictograms.push(m.URL);
+            }
+          }
+        }
+      }
+    }
+  }catch(_){}
+  return { cid, name: displayName, cas, state: phystate, formula: props.MolecularFormula, mw: props.MolecularWeight, ghsPictograms };
 }
 
 $("#lookupBtn").addEventListener("click", async ()=>{
@@ -1159,10 +1229,12 @@ $("#lookupBtn").addEventListener("click", async ()=>{
     if(hit.name) $("#itemName").value = hit.name;
     if(hit.cas)  $("#itemCAS").value  = hit.cas;
     if(hit.state) setStateToggle(hit.state);
+    pendingGHS = hit.ghsPictograms || [];
     let extra = [];
     if(hit.formula) extra.push(hit.formula);
     if(hit.mw) extra.push(`MW ${hit.mw}`);
-    $("#lookupHint").textContent = `Filled from PubChem (CID ${hit.cid})${extra.length?` — ${extra.join(", ")}`:""}.`;
+    const ghsInfo = pendingGHS.length ? `, ${pendingGHS.length} GHS pictogram${pendingGHS.length===1?"":"s"}` : "";
+    $("#lookupHint").textContent = `Filled from PubChem (CID ${hit.cid})${extra.length?` — ${extra.join(", ")}`:""}.${ghsInfo?` ${ghsInfo}`:""}`;
   }catch(e){
     console.warn(e);
     $("#lookupHint").textContent = "Lookup failed (check network). Fill the fields manually.";
@@ -1207,7 +1279,7 @@ searchEl.addEventListener("input", (e)=>{
 searchEl.addEventListener("keydown", (e)=>{ if(e.key==="Escape"){ e.target.value=""; go({kind:"rooms"}); }});
 
 /* ----------------------- Excel export ----------------------- */
-$("#exportBtn").addEventListener("click", ()=>{
+function buildExportRows(){
   const rows = [];
   for(const r of state.rooms){
     for(const c of r.cabinets){
@@ -1216,16 +1288,24 @@ $("#exportBtn").addEventListener("click", ()=>{
           "Room": r.name, "Cabinet": c.name, "Cabinet type": c.type,
           "Shelf / level": it.shelf,
           "Name of Item": it.name, "CAS number": it.cas, "State": it.state,
-          "Purity ": it.purity,
-          "Quantity": (it.amount!=null && it.amount!=="") ? `${it.amount} ${it.unit||""}`.trim() : "",
-          "Manufracturer/ Supplier ": it.supplier,
+          "Purity": it.purity,
+          "Quantity": (it.amount!=null&&it.amount!=="") ? `${it.amount} ${it.unit||""}`.trim() : "",
+          "Manufacturer / Supplier": it.supplier,
           "Catalog/Barcode": it.barcode,
-          "Special notes/Status ": it.notes,
+          "Date Received": it.dateReceived||"",
+          "Expiry Date": it.expiryDate||"",
+          "Container Status": it.containerStatus||"",
+          "SDS Link": it.sdsUrl||"",
+          "Notes / Status": it.notes,
           "Updated": it.updated,
         });
       }
     }
   }
+  return rows;
+}
+$("#exportBtn").addEventListener("click", ()=>{
+  const rows = buildExportRows();
   if(rows.length === 0){ toast("Nothing to export"); return; }
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -1277,6 +1357,12 @@ const FIELD_OPTIONS = [
   ["supplier","Manufacturer / Supplier"],
   ["barcode","Catalog / barcode"],
   ["notes","Notes / status"],
+  ["dateReceived","Date received"],
+  ["expiryDate","Expiry / retest date"],
+  ["containerStatus","Container status (Sealed/Opened/Empty)"],
+  ["sdsUrl","SDS / datasheet URL"],
+  ["createdDate","Date added / created"],
+  ["updatedDate","Date last updated"],
 ];
 function guessField(h){
   const k = h.toLowerCase().trim();
@@ -1293,6 +1379,12 @@ function guessField(h){
   if(/vendor|supplier|brand|manufacturer|manufracturer/.test(k)) return "supplier";
   if(/barcode|catalog|sku|product.*code/.test(k)) return "barcode";
   if(/note|comment|remark|status/.test(k)) return "notes";
+  if(/date.rec|received|arrival/.test(k)) return "dateReceived";
+  if(/expir|retest|best.before/.test(k)) return "expiryDate";
+  if(/container.*stat|^status$/.test(k)) return "containerStatus";
+  if(/\bsds\b|safety.*data|datasheet/.test(k)) return "sdsUrl";
+  if(/creat|added|date.*add/.test(k)) return "createdDate";
+  if(/updat|modif/.test(k)) return "updatedDate";
   if(/^si.?no|^no\.?$|^#$/.test(k)) return "";
   return "";
 }
@@ -1396,10 +1488,15 @@ $("#confirmImport").addEventListener("click", ()=>{
       supplier: v("supplier"),
       shelf,
       barcode: v("barcode"),
-      notes: [v("notes"), extra].filter(Boolean).join(" — "),
+      notes: [v("notes"), extra].filter(Boolean).join(" — ").slice(0, 500),
+      dateReceived: v("dateReceived")||null,
+      expiryDate:   v("expiryDate")||null,
+      containerStatus: v("containerStatus")||null,
+      sdsUrl:       v("sdsUrl")||null,
+      ghsPictograms: [],
       originalLocation: locStr || "",
-      created: new Date().toISOString(),
-      updated: new Date().toISOString(),
+      created: v("createdDate") ? new Date(v("createdDate")).toISOString() : new Date().toISOString(),
+      updated: v("updatedDate") ? new Date(v("updatedDate")).toISOString() : new Date().toISOString(),
     });
     added++;
   }
@@ -1411,12 +1508,19 @@ $("#confirmImport").addEventListener("click", ()=>{
 /* ----------------------- reset ----------------------- */
 $("#resetBtn").addEventListener("click",()=>{
   askConfirm("Reset all data?",
-    "This wipes everything in this browser and reloads the inventory from inventory-data.js.",
+    "This wipes everything in this browser and reloads from inventory-data.js. A backup Excel will be downloaded first.",
     ()=>{
+      const rows = buildExportRows();
+      if(rows.length){
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Inventory");
+        XLSX.writeFile(wb, `lam-chem-backup-${new Date().toISOString().slice(0,10)}.xlsx`);
+      }
       localStorage.removeItem(STORAGE_KEY);
       state = loadState();
       go({kind:"rooms"});
-      toast("Reset");
+      toast("Reset complete — backup downloaded");
     });
 });
 
