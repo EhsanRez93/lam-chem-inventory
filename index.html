@@ -1,0 +1,1427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>LAM Chem Inventory</title>
+
+<!-- Excel import/export -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- Camera barcode scanner -->
+<script src="https://unpkg.com/html5-qrcode@2.3.10/html5-qrcode.min.js"></script>
+<!-- Initial seed data (parsed from "LAM Chemical Inventory current.xlsx") -->
+<script src="inventory-data.js"></script>
+
+<style>
+  :root{
+    --bg:#f5f7fb; --panel:#fff; --ink:#1d2433; --muted:#6b7385;
+    --line:#e3e7ee; --accent:#2f6feb; --accent-2:#5b8def;
+    --warn:#c2410c; --ok:#0f7a4c; --bad:#c0392b;
+    --liquid:#e6f1ff; --liquid-ink:#1d4ed8;
+    --solid:#fff4e0;  --solid-ink:#a15c00;
+    --gas:#eafaf0;    --gas-ink:#0f7a4c;
+    --yellow-c:#fff4cc; --yellow-c-ink:#8a6d00;
+    --vented-c:#e7f3ff; --vented-c-ink:#1d4ed8;
+    --fridge-c:#e8f7ee; --fridge-c-ink:#0f7a4c;
+    --desic-c:#f3e8ff;  --desic-c-ink:#6b21a8;
+    --glove-c:#fde8ec;  --glove-c-ink:#9b1c2e;
+    --shadow:0 1px 2px rgba(20,30,60,.05), 0 8px 24px rgba(20,30,60,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;}
+  button{font:inherit;cursor:pointer}
+  input,select,textarea{font:inherit;color:inherit}
+
+  header{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line)}
+  .bar{display:flex;align-items:center;gap:14px;max-width:1200px;margin:0 auto;padding:12px 20px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700}
+  .brand .logo{
+    width:30px;height:30px;border-radius:8px;
+    background:linear-gradient(135deg,var(--accent),#7aa2ff);
+    display:flex;align-items:center;justify-content:center;color:white;font-weight:800;
+  }
+  .crumb{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:14px;flex-wrap:wrap}
+  .crumb .sep{color:#c2c8d4}
+  .crumb a{cursor:pointer;color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--ink)}
+  .crumb .here{color:var(--ink);font-weight:600}
+  .grow{flex:1}
+  .search{
+    display:flex;align-items:center;gap:8px;border:1px solid var(--line);
+    background:#fafbfd;border-radius:10px;padding:6px 10px;min-width:280px;
+  }
+  .search input{border:0;outline:0;background:transparent;width:100%;padding:6px 0}
+  .btn{
+    background:#fff;border:1px solid var(--line);border-radius:10px;
+    padding:8px 12px;display:inline-flex;align-items:center;gap:8px;color:var(--ink);
+  }
+  .btn:hover{background:#f7f8fb}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{background:#2861d6}
+  .btn.danger{color:#fff;background:var(--bad);border-color:var(--bad)}
+  .btn.danger:hover{background:#a5301f}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+  .icon{width:16px;height:16px}
+
+  main{max-width:1200px;margin:18px auto 60px;padding:0 20px}
+  h1{font-size:22px;margin:14px 0 4px}
+  h2{font-size:18px;margin:18px 0 10px}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 18px}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+  .card{
+    position:relative;background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px;box-shadow:var(--shadow);cursor:pointer;
+    display:flex;flex-direction:column;gap:6px;min-height:130px;
+    transition:transform .08s ease, box-shadow .15s ease;
+  }
+  .card:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(20,30,60,.10)}
+  .card .name{font-size:18px;font-weight:700}
+  .card .meta{color:var(--muted);font-size:13px;margin-top:auto}
+  .card .pill{
+    align-self:flex-start;font-size:11px;border-radius:999px;padding:2px 8px;
+    background:#eef2ff;color:#3242a8;margin-bottom:4px;
+  }
+  .card .x{
+    position:absolute;top:8px;right:8px;width:26px;height:26px;
+    border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--muted);
+    display:none;align-items:center;justify-content:center;
+  }
+  .card:hover .x{display:flex}
+  .card .x:hover{color:var(--bad);border-color:var(--bad);background:#fff4f3}
+  /* edit mode: always show × on cards (touch-friendly) */
+  body.edit-mode .card .x{display:flex;color:var(--bad);border-color:var(--bad)}
+  body.edit-mode .card{border-color:#fcd9d4}
+  .edit-toggle.on{background:var(--bad);color:#fff;border-color:var(--bad)}
+
+  .cab-transfer-row{
+    display:grid;grid-template-columns:1fr 180px 32px;gap:8px;align-items:center;
+    padding:6px 0;border-top:1px solid var(--line);
+  }
+  .cab-transfer-row:first-child{border-top:0}
+  .cab-transfer-row .name{font-weight:600;font-size:14px}
+  .cab-transfer-row .pill{font-size:11px;border-radius:999px;padding:2px 8px;margin-left:6px;
+    background:#eef2ff;color:#3242a8}
+  .cab-transfer-row select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:#fff}
+  .cab-transfer-row .x{
+    width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--muted);
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+  }
+  .cab-transfer-row .x:hover{color:var(--bad);border-color:var(--bad);background:#fff4f3}
+  .card.add{border-style:dashed;background:transparent;color:var(--muted);
+    align-items:center;justify-content:center;text-align:center;font-weight:600}
+  .card.add:hover{color:var(--accent);border-color:var(--accent)}
+
+  .pill.yellow{background:var(--yellow-c);color:var(--yellow-c-ink)}
+  .pill.vented{background:var(--vented-c);color:var(--vented-c-ink)}
+  .pill.fridge{background:var(--fridge-c);color:var(--fridge-c-ink)}
+  .pill.freezer{background:var(--fridge-c);color:var(--fridge-c-ink)}
+  .pill.desiccator{background:var(--desic-c);color:var(--desic-c-ink)}
+  .pill.glovebox{background:var(--glove-c);color:var(--glove-c-ink)}
+
+  .tablewrap{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow);overflow:hidden}
+  table{width:100%;border-collapse:collapse}
+  thead th{
+    text-align:left;font-size:12px;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--muted);background:#fafbfd;padding:10px 14px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;
+  }
+  tbody td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:#fafbfe}
+  .state{
+    display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    border-radius:999px;padding:2px 8px;
+  }
+  .state.liquid{background:var(--liquid);color:var(--liquid-ink)}
+  .state.solid{background:var(--solid);color:var(--solid-ink)}
+  .state.gas{background:var(--gas);color:var(--gas-ink)}
+  .state.unknown{background:#eef2f7;color:#52607a}
+  .row-actions{display:flex;gap:6px;justify-content:flex-end}
+  .row-actions .btn{padding:6px 8px;font-size:12px}
+
+  .results{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow);padding:8px 0;margin-top:14px}
+  .result{padding:10px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;
+    border-bottom:1px solid var(--line)}
+  .result:last-child{border-bottom:0}
+  .result:hover{background:#fafbfe}
+  .result .where{color:var(--muted);font-size:12px}
+
+  .empty{background:var(--panel);border:1px dashed var(--line);border-radius:14px;
+    padding:40px;text-align:center;color:var(--muted)}
+
+  .modal-backdrop{position:fixed;inset:0;background:rgba(20,28,48,.45);
+    display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+  .modal-backdrop.show{display:flex}
+  .modal{background:#fff;border-radius:16px;box-shadow:0 30px 80px rgba(20,30,60,.25);
+    width:100%;max-width:560px;max-height:90vh;overflow:auto}
+  .modal h3{margin:0;padding:18px 20px;border-bottom:1px solid var(--line);font-size:18px}
+  .modal .body{padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+  .modal .foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field > label{font-size:12px;color:var(--muted);font-weight:600}
+  .field > .ctrl,.field > input,.field > select,.field > textarea{
+    border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff}
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .qty-row{display:grid;grid-template-columns:1fr 110px;gap:8px}
+  .hint{color:var(--muted);font-size:12px}
+  .toggle-state{display:flex;gap:6px;flex-wrap:wrap}
+  .toggle-state button{padding:6px 10px;border-radius:999px;border:1px solid var(--line);
+    background:#fff;color:var(--muted)}
+  .toggle-state button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+  .file-btn{position:relative;overflow:hidden}
+  .file-btn input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    background:#1d2433;color:#fff;padding:10px 14px;border-radius:10px;font-size:13px;
+    opacity:0;pointer-events:none;transition:opacity .15s;z-index:99}
+  .toast.show{opacity:1}
+
+  @media (max-width:720px){
+    .bar{flex-wrap:wrap}
+    .search{order:3;width:100%;min-width:0}
+    .field-row{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <div class="brand">
+      <div class="logo">CL</div>
+      <div>LAM Chem Inventory</div>
+    </div>
+    <nav id="crumb" class="crumb"></nav>
+    <div class="grow"></div>
+
+    <div class="search">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
+      </svg>
+      <input id="globalSearch" placeholder="Search by name or CAS…" autocomplete="off"/>
+    </div>
+
+    <button class="btn file-btn" title="Import existing Excel inventory">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      Import
+      <input id="importFile" type="file" accept=".xlsx,.xls,.csv"/>
+    </button>
+    <button class="btn" id="exportBtn" title="Export to Excel">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/></svg>
+      Export
+    </button>
+    <button class="btn ghost" id="resetBtn" title="Wipe local data and reload from inventory-data.js">Reset</button>
+  </div>
+</header>
+
+<main id="app"></main>
+
+<!-- Modal: add/edit room -->
+<div class="modal-backdrop" id="roomModal">
+  <div class="modal">
+    <h3 id="roomModalTitle">Add room / lab</h3>
+    <div class="body">
+      <div class="field"><label>Room number / name</label>
+        <input id="roomName" placeholder="e.g. 414"/></div>
+      <div class="field"><label>Notes (optional)</label>
+        <input id="roomNotes" placeholder="e.g. synthesis lab"/></div>
+
+      <div id="cabTransferSection" style="display:none;margin-top:6px">
+        <div style="font-size:12px;color:var(--muted);font-weight:600;margin-bottom:8px">Cabinets in this room</div>
+        <div class="hint" style="margin-bottom:8px">Use the <b>Move&nbsp;to</b> dropdown to transfer a cabinet to a different room. Click&nbsp;× to delete it.</div>
+        <div id="cabTransferList"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button class="btn danger" id="deleteRoomBtn" style="margin-right:auto;display:none">Delete room</button>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="saveRoom">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: add/edit cabinet -->
+<div class="modal-backdrop" id="cabModal">
+  <div class="modal">
+    <h3 id="cabModalTitle">Add cabinet</h3>
+    <div class="body">
+      <div class="field"><label>Cabinet name</label>
+        <input id="cabName" placeholder="e.g. Yellow Cabinet, Vented Cabinet"/></div>
+      <div class="field-row">
+        <div class="field"><label>Type</label>
+          <select id="cabType">
+            <option value="yellow">Yellow Cabinet</option>
+            <option value="vented">Vented Cabinet</option>
+            <option value="fridge">Fridge</option>
+            <option value="freezer">Freezer</option>
+            <option value="desiccator">Desiccator</option>
+            <option value="glovebox">Glove Box</option>
+            <option value="standard">Standard</option>
+          </select></div>
+        <div class="field"><label>Notes (optional)</label>
+          <input id="cabNotes" placeholder=""/></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button class="btn danger" id="deleteCabBtn" style="margin-right:auto;display:none">Delete cabinet</button>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="saveCab">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: add / edit item -->
+<div class="modal-backdrop" id="itemModal">
+  <div class="modal">
+    <h3 id="itemModalTitle">Add item</h3>
+    <div class="body">
+      <div class="field">
+        <label>Lookup (barcode / CAS / name)</label>
+        <div style="display:flex;gap:8px">
+          <input id="lookupInput" placeholder="Scan or type a CAS number or compound name…" style="flex:1;border:1px solid var(--line);border-radius:10px;padding:10px 12px"/>
+          <button class="btn" id="scanBtn" title="Scan barcode with camera">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8v8M11 8v8M15 8v8M19 8v8"/></svg>
+            Scan
+          </button>
+          <button class="btn primary" id="lookupBtn">Lookup</button>
+        </div>
+        <div class="hint" id="lookupHint">PubChem will fill name + CAS + state when found. You can also fill manually.</div>
+      </div>
+
+      <div id="scannerHost" style="display:none">
+        <div id="scannerView" style="border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#000"></div>
+        <div class="hint">Point camera at the barcode. Tap Stop when done.</div>
+        <div style="margin-top:6px"><button class="btn" id="stopScanBtn">Stop scanner</button></div>
+      </div>
+
+      <div class="field-row">
+        <div class="field"><label>Compound name</label>
+          <input id="itemName" placeholder="e.g. Acetone"/></div>
+        <div class="field"><label>CAS number</label>
+          <input id="itemCAS" placeholder="e.g. 67-64-1"/></div>
+      </div>
+
+      <div class="field-row">
+        <div class="field"><label>Physical state</label>
+          <div class="ctrl toggle-state" id="stateToggle">
+            <button data-state="liquid" type="button">Liquid</button>
+            <button data-state="solid" type="button">Solid</button>
+            <button data-state="gas" type="button">Gas</button>
+          </div></div>
+        <div class="field"><label>Purity</label>
+          <input id="itemPurity" placeholder="e.g. 99.5%"/></div>
+      </div>
+
+      <div class="field"><label>Amount</label>
+        <div class="qty-row">
+          <input id="itemAmount" type="number" min="0" step="any" placeholder="0"/>
+          <select id="itemUnit"></select>
+        </div>
+        <div class="hint" id="unitHint">Unit choices follow the physical state (mL/L for liquids, g/kg/mg for solids, L/mol/cyl for gas).</div>
+      </div>
+
+      <div class="field-row">
+        <div class="field"><label>Supplier (optional)</label>
+          <input id="itemSupplier" placeholder="e.g. Sigma-Aldrich"/></div>
+        <div class="field"><label>Shelf / level (optional)</label>
+          <input id="itemShelf" placeholder="e.g. left Level 2, Tray 3"/></div>
+      </div>
+
+      <div class="field-row">
+        <div class="field"><label>Room *</label>
+          <select id="itemRoom"></select></div>
+        <div class="field"><label>Cabinet *</label>
+          <select id="itemCabinet"></select></div>
+      </div>
+
+      <div class="field-row">
+        <div class="field"><label>Catalog / barcode (optional)</label>
+          <input id="itemBarcode" placeholder=""/></div>
+        <div class="field"><label>Special notes / status</label>
+          <input id="itemNotes" placeholder="e.g. opened 2026-04-12"/></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button class="btn danger" id="deleteItemBtn" style="margin-right:auto;display:none">Delete</button>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="saveItem">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: import column mapping -->
+<div class="modal-backdrop" id="importModal">
+  <div class="modal" style="max-width:720px">
+    <h3>Import inventory from Excel</h3>
+    <div class="body">
+      <div class="hint">Each sheet row becomes one item. We'll parse the <b>Location</b> column to figure out room + cabinet (Yellow / Vented / Fridge / Desiccator / Glove Box) automatically.</div>
+      <div id="importPreview"></div>
+      <div class="field"><label>If a row has no parseable Room, place items in:</label>
+        <input id="defaultRoom" placeholder="Default room (e.g. 422)"/></div>
+    </div>
+    <div class="foot">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="confirmImport">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div class="modal-backdrop" id="confirmModal">
+  <div class="modal" style="max-width:420px">
+    <h3 id="confirmTitle">Are you sure?</h3>
+    <div class="body"><div id="confirmBody"></div></div>
+    <div class="foot">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn danger" id="confirmYes">Yes, do it</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =========================================================================
+   LAM Chem Inventory — single-page app
+   ========================================================================= */
+
+const STORAGE_KEY = "chem-inv-v2";   // bumped from v1 — old demo data is replaced
+
+let state = loadState();
+let view = { kind: "rooms" };
+let editMode = false;
+let editing = null;
+let editingRoom = null;
+let editingCab  = null;
+let pendingImport = null;
+let scanner = null;
+
+function toggleEditMode(){
+  editMode = !editMode;
+  document.body.classList.toggle("edit-mode", editMode);
+  render();
+}
+function makeEditToggle(){
+  return el("button",{
+    class: "btn edit-toggle " + (editMode ? "on" : ""),
+    onclick: toggleEditMode,
+    title: "Toggle edit mode for this page",
+  }, editMode ? "Done" : "Edit");
+}
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  // first run — use embedded LAM seed
+  if(window.LAM_SEED && Array.isArray(window.LAM_SEED.rooms)){
+    return JSON.parse(JSON.stringify(window.LAM_SEED));
+  }
+  return { rooms: [] };
+}
+function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+const uid = () => Math.random().toString(36).slice(2,10);
+
+/* ----------------------- helpers ----------------------- */
+function toast(msg){
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.remove("show"), 2200);
+}
+function $(s,r=document){ return r.querySelector(s); }
+function $$(s,r=document){ return Array.from(r.querySelectorAll(s)); }
+function el(tag, attrs={}, kids=[]){
+  const e = document.createElement(tag);
+  for(const [k,v] of Object.entries(attrs)){
+    if(k === "class") e.className = v;
+    else if(k === "html") e.innerHTML = v;
+    else if(k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for(const k of (Array.isArray(kids)?kids:[kids])){
+    if(k==null) continue;
+    e.append(k.nodeType ? k : document.createTextNode(k));
+  }
+  return e;
+}
+function findRoom(id){ return state.rooms.find(r=>r.id===id); }
+function findCab(roomId, cabId){
+  const r = findRoom(roomId); return r ? r.cabinets.find(c=>c.id===cabId) : null;
+}
+function findItem(roomId, cabId, itemId){
+  const c = findCab(roomId, cabId); return c ? c.items.find(i=>i.id===itemId) : null;
+}
+
+/* unit / state */
+const UNITS = {
+  liquid: ["mL","L"],
+  solid:  ["g","kg","mg"],
+  gas:    ["L","mol","cyl"],
+  unknown:["g","mL","kg","L","mg","mol","cyl"],
+};
+function defaultUnit(s){
+  if(s==="liquid") return "mL";
+  if(s==="solid")  return "g";
+  if(s==="gas")    return "L";
+  return "g";
+}
+
+const KNOWN_LIQUIDS = new Set(["water","acetone","methanol","ethanol","2-propanol","isopropanol","ipa",
+  "n-hexane","hexane","heptane","pentane","cyclohexane","toluene","benzene","xylene","diethyl ether",
+  "tetrahydrofuran","thf","2-methyltetrahydrofuran","1,4-dioxane","dichloromethane","dcm","chloroform",
+  "carbon tetrachloride","ccl4","ethyl acetate","etoac","methyl acetate","acetonitrile","mecn","dmf","dmso",
+  "n-methyl-2-pyrrolidone","nmp","pyridine","triethylamine","tea","diisopropylethylamine","dipea",
+  "formic acid","acetic acid","trifluoroacetic acid","tfa","sulfuric acid","hydrochloric acid",
+  "nitric acid","phosphoric acid","ammonia solution","hydrogen peroxide","hydrazine hydrate",
+  "glycerol","ethylene glycol","propylene glycol","n,n-dimethylformamide","n,n-dimethylacetamide",
+  "dma","mesitylene","anisole","piperidine","morpholine","aniline","bromobenzene","chlorobenzene"]);
+const KNOWN_SOLIDS = new Set(["sodium chloride","potassium chloride","sodium hydroxide","potassium hydroxide",
+  "sodium carbonate","sodium bicarbonate","potassium carbonate","copper(ii) sulfate","magnesium sulfate",
+  "sodium sulfate","calcium chloride","lithium chloride","iodine","sulfur","silica gel","alumina",
+  "molecular sieves","activated carbon","potassium permanganate","sodium borohydride",
+  "lithium aluminum hydride","lah","palladium on carbon","pd/c","copper iodide","zinc dust",
+  "magnesium turnings","aluminum chloride","boric acid","glucose","sucrose","caffeine","urea","thiourea",
+  "ammonium chloride","ammonium nitrate","sodium acetate","potassium iodide"]);
+const KNOWN_GASES = new Set(["nitrogen","argon","helium","hydrogen","oxygen","carbon dioxide","ammonia"]);
+function guessStateFromName(n){
+  if(!n) return null;
+  const k = n.trim().toLowerCase();
+  if(KNOWN_LIQUIDS.has(k)) return "liquid";
+  if(KNOWN_SOLIDS.has(k))  return "solid";
+  if(KNOWN_GASES.has(k))   return "gas";
+  return null;
+}
+
+/* location parser — same logic as the Python seed builder */
+function parseLocation(loc){
+  if(loc==null) return {room:null, cabinet:null, shelf:""};
+  const s = String(loc).trim();
+  if(!s) return {room:null, cabinet:null, shelf:""};
+  const m = s.match(/\b(\d{3})\b/);
+  const room = m ? m[1] : null;
+  const low = s.toLowerCase();
+  let cabinet;
+  if(/yellow/.test(low) && (/cabinet/.test(low) || /metal/.test(low))) cabinet = "Yellow Cabinet";
+  else if(/vented/.test(low) && /cabinet/.test(low)) cabinet = "Vented Cabinet";
+  else if(/fridge/.test(low)) cabinet = "Fridge";
+  else if(/freezer/.test(low)) cabinet = "Freezer";
+  else if(/desiccator|dessicator/.test(low)) cabinet = "Desiccator";
+  else if(/glove\s*box/.test(low)) cabinet = "Glove Box";
+  else cabinet = s;
+  let shelf = s;
+  for(const re of [/yellow\s*metal\s*cabinet/ig, /yellow\s*cabinet/ig,
+                   /vented\s*cabinet/ig, /fridge/ig, /freezer/ig,
+                   /desiccator|dessicator/ig, /glove\s*box/ig]){
+    shelf = shelf.replace(re, "");
+  }
+  if(room) shelf = shelf.replace(new RegExp("\\b"+room+"\\b","g"), "");
+  shelf = shelf.replace(/[()]/g," ").replace(/[.,\-]+/g," ").replace(/\s+/g," ").trim();
+  shelf = shelf.replace(/\bLvl\.?\b/gi, "Level").replace(/\blevel\b/gi, "Level");
+  shelf = shelf.replace(/\s+/g," ").trim();
+  return {room, cabinet, shelf};
+}
+
+/* parse "250 gms" / "2.5 L" -> {amount, unit} */
+function normUnit(u){
+  if(!u) return null;
+  u = u.toLowerCase().trim();
+  if(["gms","gm","g","grams","gram"].includes(u)) return "g";
+  if(["kg","kilogram","kilograms"].includes(u)) return "kg";
+  if(["mg","milligram","milligrams"].includes(u)) return "mg";
+  if(["ml","milliliter","milliliters"].includes(u)) return "mL";
+  if(["l","liter","liters","litre","litres"].includes(u)) return "L";
+  if(["mol","mole","moles"].includes(u)) return "mol";
+  if(["cyl","cylinder"].includes(u)) return "cyl";
+  return u;
+}
+function parseQty(q){
+  if(q==null) return {amount:null, unit:null};
+  const s = String(q).trim(); if(!s) return {amount:null, unit:null};
+  const m = s.match(/^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)?\s*$/);
+  if(m) return {amount: parseFloat(m[1]), unit: normUnit(m[2]||"")};
+  const num = s.match(/(\d+(?:\.\d+)?)/);
+  const u = s.match(/[A-Za-z]+/);
+  return {amount: num?parseFloat(num[1]):null, unit: u?normUnit(u[0]):null};
+}
+function stateFromUnit(u){
+  if(["g","kg","mg"].includes(u)) return "solid";
+  if(["mL","L"].includes(u)) return "liquid";
+  if(["mol","cyl"].includes(u)) return "gas";
+  return null;
+}
+function fmtPurity(p){
+  if(p===null||p===undefined||p==="") return "";
+  const x = parseFloat(p);
+  if(!isNaN(x)){
+    if(x>0 && x<=1) return (x*100).toString().replace(/\.?0+$/,"") + "%";
+    return x.toString().replace(/\.?0+$/,"") + "%";
+  }
+  return String(p).trim();
+}
+
+/* ----------------------- routing ----------------------- */
+function go(v){ view = v; render(); window.scrollTo({top:0}); }
+
+function renderCrumb(){
+  const c = document.getElementById("crumb"); c.innerHTML = "";
+  c.append(el("a",{onclick:()=>go({kind:"rooms"})}, "Rooms"));
+  if(view.kind === "cabinets"){
+    const r = findRoom(view.roomId);
+    c.append(el("span",{class:"sep"},"›"));
+    c.append(el("span",{class:"here"}, r?`Room ${r.name}`:"Room"));
+  }
+  if(view.kind === "items"){
+    const r = findRoom(view.roomId), cab = findCab(view.roomId, view.cabId);
+    c.append(el("span",{class:"sep"},"›"));
+    c.append(el("a",{onclick:()=>go({kind:"cabinets",roomId:view.roomId})}, r?`Room ${r.name}`:"Room"));
+    c.append(el("span",{class:"sep"},"›"));
+    c.append(el("span",{class:"here"}, cab?cab.name:"Cabinet"));
+  }
+  if(view.kind === "search"){
+    c.append(el("span",{class:"sep"},"›"));
+    c.append(el("span",{class:"here"}, `Search: "${view.query}"`));
+  }
+}
+
+/* ----------------------- views ----------------------- */
+function viewRooms(){
+  const wrap = el("div");
+  const head = el("div",{style:"display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap"});
+  head.append(el("div",{},[
+    el("h1",{style:"margin-bottom:0"}, "Rooms / Labs"),
+    el("p",{class:"sub"}, editMode
+      ? "Edit mode — click × on any card to delete a room."
+      : "Pick a room to see its cabinets."),
+  ]));
+  head.append(el("div",{class:"grow"}));
+  head.append(el("button",{class:"btn primary", onclick:()=>openAddItem()}, [iconPlus(), "Add item"]));
+  head.append(makeEditToggle());
+  wrap.append(head);
+  const grid = el("div",{class:"grid"});
+  for(const r of state.rooms){
+    const itemCount = r.cabinets.reduce((n,c)=>n+c.items.length,0);
+    const card = el("div",{class:"card", onclick:()=>go({kind:"cabinets",roomId:r.id})},[
+      el("button",{class:"x",title:"Remove this room", onclick:(e)=>{
+        e.stopPropagation(); confirmDeleteRoom(r);
+      }}, "×"),
+      el("span",{class:"pill"}, "Room"),
+      el("div",{class:"name"}, r.name || "(unnamed)"),
+      r.notes ? el("div",{class:"meta"}, r.notes) : null,
+      el("div",{class:"meta"}, `${r.cabinets.length} cabinet${r.cabinets.length===1?"":"s"} · ${itemCount} item${itemCount===1?"":"s"}`),
+    ]);
+    grid.append(card);
+  }
+  grid.append(el("div",{class:"card add", onclick:openAddRoom},[
+    el("div",{html:"&plus;",style:"font-size:28px;line-height:1"}),
+    el("div",{}, "Add room / lab"),
+  ]));
+  wrap.append(grid);
+  return wrap;
+}
+
+function viewCabinets(){
+  const r = findRoom(view.roomId);
+  const wrap = el("div");
+  const head = el("div",{style:"display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap"});
+  head.append(el("div",{},[
+    el("h1",{style:"margin-bottom:0"}, `Room ${r?.name ?? ""}`),
+    el("p",{class:"sub"}, r?.notes || "Cabinets in this room. Click × to remove a cabinet."),
+  ]));
+  head.append(el("div",{class:"grow"}));
+  head.append(el("button",{class:"btn", onclick:()=>openEditRoom(r.id)}, "Edit room"));
+  head.append(el("button",{class:"btn primary", onclick:()=>openAddItem({roomId: r?.id})}, [iconPlus(), "Add item"]));
+  head.append(makeEditToggle());
+  wrap.append(head);
+
+  const grid = el("div",{class:"grid"});
+  for(const cab of (r?.cabinets ?? [])){
+    grid.append(el("div",{class:"card", onclick:()=>go({kind:"items",roomId:r.id,cabId:cab.id})},[
+      el("button",{class:"x",title:"Remove this cabinet", onclick:(e)=>{
+        e.stopPropagation(); confirmDeleteCab(r, cab);
+      }}, "×"),
+      el("span",{class:"pill "+(cab.type||"standard")}, cabTypeLabel(cab.type)),
+      el("div",{class:"name"}, cab.name || "(unnamed)"),
+      cab.notes ? el("div",{class:"meta"}, cab.notes) : null,
+      el("div",{class:"meta"}, `${cab.items.length} item${cab.items.length===1?"":"s"}`),
+    ]));
+  }
+  grid.append(el("div",{class:"card add", onclick:openAddCab},[
+    el("div",{html:"&plus;",style:"font-size:28px;line-height:1"}),
+    el("div",{}, "Add cabinet"),
+  ]));
+  wrap.append(grid);
+  return wrap;
+}
+
+function cabTypeLabel(t){
+  return ({yellow:"Yellow", vented:"Vented", fridge:"Fridge", freezer:"Freezer",
+           desiccator:"Desiccator", glovebox:"Glove Box", standard:"Standard"})[t] || (t||"Standard");
+}
+
+function viewItems(){
+  const r = findRoom(view.roomId);
+  const cab = findCab(view.roomId, view.cabId);
+  const wrap = el("div");
+  const head = el("div",{style:"display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap"});
+  head.append(el("div",{},[
+    el("h1",{style:"margin-bottom:0"}, cab?cab.name:""),
+    el("p",{class:"sub"}, `Room ${r?.name ?? ""} · ${cabTypeLabel(cab?.type)}${cab?.notes?` · ${cab.notes}`:""}`),
+  ]));
+  head.append(el("div",{class:"grow"}));
+  head.append(el("button",{class:"btn", onclick:()=>openEditCab(r.id, cab.id)}, "Edit cabinet"));
+  head.append(el("button",{class:"btn primary", onclick:()=>openAddItem({roomId:r.id, cabId:cab.id})}, [iconPlus(), "Add item"]));
+  head.append(makeEditToggle());
+  wrap.append(head);
+
+  if(!cab || cab.items.length === 0){
+    wrap.append(el("div",{class:"empty"}, "No items here yet. Click 'Add item' to scan or enter a chemical."));
+    return wrap;
+  }
+
+  // sort items by shelf, then by name
+  const items = [...cab.items].sort((a,b)=>{
+    const sa = (a.shelf||"").toLowerCase(), sb = (b.shelf||"").toLowerCase();
+    if(sa !== sb) return sa.localeCompare(sb);
+    return (a.name||"").toLowerCase().localeCompare((b.name||"").toLowerCase());
+  });
+
+  const tbl = el("table");
+  const thead = el("thead",{},[
+    el("tr",{},[
+      el("th",{},"Name"),el("th",{},"CAS"),el("th",{},"State"),
+      el("th",{},"Purity"),el("th",{},"Quantity"),
+      el("th",{},"Supplier"),el("th",{},"Shelf / level"),
+      el("th",{style:"text-align:right"},""),
+    ])
+  ]);
+  const tbody = el("tbody");
+  for(const it of items){
+    tbody.append(el("tr",{},[
+      el("td",{},[
+        el("div",{style:"font-weight:600"}, it.name || "(unnamed)"),
+        it.notes ? el("div",{class:"hint",style:"margin-top:2px"}, it.notes) : null,
+      ]),
+      el("td",{}, it.cas || "—"),
+      el("td",{},[ el("span",{class:`state ${it.state||"unknown"}`}, it.state||"unknown") ]),
+      el("td",{}, it.purity || "—"),
+      el("td",{}, (it.amount!=null && it.amount!=="") ? `${it.amount} ${it.unit||""}`.trim() : "—"),
+      el("td",{}, it.supplier || "—"),
+      el("td",{}, it.shelf || "—"),
+      el("td",{},[ el("div",{class:"row-actions"},[
+        el("button",{class:"btn", onclick:()=>openEditItem(it.id)}, "Edit"),
+        editMode ? el("button",{class:"btn danger", onclick:()=>{
+          askConfirm(`Delete ${it.name||"this item"}?`, "This removes the item from this cabinet.", ()=>{
+            cab.items = cab.items.filter(x=>x.id!==it.id);
+            saveState(); render(); toast("Deleted");
+          });
+        }}, "Delete") : null,
+      ]) ]),
+    ]));
+  }
+  tbl.append(thead, tbody);
+  wrap.append(el("div",{class:"tablewrap"}, tbl));
+  return wrap;
+}
+
+function viewSearch(){
+  const q = (view.query||"").trim().toLowerCase();
+  const wrap = el("div");
+  wrap.append(el("h1",{}, "Search"));
+  wrap.append(el("p",{class:"sub"}, `Results for "${view.query}"`));
+  if(!q) return wrap;
+  const matches = [];
+  for(const r of state.rooms){
+    for(const c of r.cabinets){
+      for(const it of c.items){
+        const hay = `${it.name||""} ${it.cas||""} ${it.supplier||""} ${it.barcode||""}`.toLowerCase();
+        if(hay.includes(q)) matches.push({room:r,cab:c,item:it});
+      }
+    }
+  }
+  if(matches.length === 0){
+    wrap.append(el("div",{class:"empty"}, "No matches."));
+    return wrap;
+  }
+  wrap.append(el("p",{class:"sub"}, `${matches.length} match${matches.length===1?"":"es"}`));
+  const list = el("div",{class:"results"});
+  for(const m of matches){
+    list.append(el("div",{class:"result", onclick:()=>{
+      go({kind:"items",roomId:m.room.id,cabId:m.cab.id});
+    }},[
+      el("div",{},[
+        el("div",{style:"font-weight:600"}, m.item.name || "(unnamed)"),
+        el("div",{class:"where"}, `Room ${m.room.name} · ${m.cab.name}${m.item.shelf?` · ${m.item.shelf}`:""}${m.item.cas?` · CAS ${m.item.cas}`:""}`),
+      ]),
+      el("div",{class:"grow"}),
+      el("span",{class:`state ${m.item.state||"unknown"}`}, m.item.state || "unknown"),
+    ]));
+  }
+  wrap.append(list);
+  return wrap;
+}
+
+function iconPlus(){
+  const e = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  e.setAttribute("class","icon");e.setAttribute("viewBox","0 0 24 24");
+  e.setAttribute("fill","none");e.setAttribute("stroke","currentColor");e.setAttribute("stroke-width","2");
+  e.innerHTML = '<path d="M12 5v14M5 12h14"/>';
+  return e;
+}
+
+function render(){
+  renderCrumb();
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  let v;
+  if(view.kind === "rooms")     v = viewRooms();
+  else if(view.kind === "cabinets") v = viewCabinets();
+  else if(view.kind === "items")    v = viewItems();
+  else if(view.kind === "search")   v = viewSearch();
+  else v = viewRooms();
+  app.append(v);
+}
+
+/* ----------------------- modals ----------------------- */
+function openModal(id){ document.getElementById(id).classList.add("show"); }
+function closeModal(id){ document.getElementById(id).classList.remove("show"); }
+$$("[data-close]").forEach(b=>b.addEventListener("click", e=>{
+  e.target.closest(".modal-backdrop").classList.remove("show");
+}));
+$$(".modal-backdrop").forEach(bd=>bd.addEventListener("click", e=>{
+  if(e.target===bd) bd.classList.remove("show");
+}));
+
+/* confirm dialog */
+function askConfirm(title, body, onYes){
+  $("#confirmTitle").textContent = title;
+  $("#confirmBody").textContent = body;
+  const y = $("#confirmYes");
+  const handler = ()=>{ onYes(); closeModal("confirmModal"); y.removeEventListener("click", handler); };
+  y.addEventListener("click", handler);
+  openModal("confirmModal");
+}
+
+/* ----- room add/edit/delete ----- */
+function openAddRoom(){
+  editingRoom = null;
+  $("#roomName").value = ""; $("#roomNotes").value = "";
+  $("#roomModalTitle").textContent = "Add room / lab";
+  $("#deleteRoomBtn").style.display = "none";
+  openModal("roomModal");
+  setTimeout(()=>$("#roomName").focus(), 50);
+}
+function openEditRoom(roomId){
+  const r = findRoom(roomId); if(!r) return;
+  editingRoom = roomId;
+  $("#roomName").value = r.name || ""; $("#roomNotes").value = r.notes || "";
+  $("#roomModalTitle").textContent = "Edit room";
+  $("#deleteRoomBtn").style.display = "";
+  buildCabTransferList(r);
+  openModal("roomModal");
+}
+
+function buildCabTransferList(room){
+  const sect = $("#cabTransferSection");
+  const list = $("#cabTransferList");
+  list.innerHTML = "";
+  if(!room.cabinets || room.cabinets.length === 0){
+    sect.style.display = "none";
+    return;
+  }
+  sect.style.display = "";
+  for(const cab of room.cabinets){
+    const sel = el("select",{ "data-cabid": cab.id });
+    sel.append(new Option(`Stay in ${room.name}`, room.id));
+    for(const other of state.rooms){
+      if(other.id === room.id) continue;
+      sel.append(new Option(`Move to ${other.name}`, other.id));
+    }
+    const row = el("div",{class:"cab-transfer-row"},[
+      el("div",{},[
+        el("span",{class:"name"}, cab.name),
+        el("span",{class:"pill "+(cab.type||"standard")}, cabTypeLabel(cab.type)),
+        el("div",{class:"hint"}, `${cab.items.length} item${cab.items.length===1?"":"s"}`),
+      ]),
+      sel,
+      el("div",{class:"x", title:"Delete this cabinet", onclick:()=>{
+        closeModal("roomModal");
+        confirmDeleteCab(room, cab);
+      }}, "×"),
+    ]);
+    list.append(row);
+  }
+}
+$("#saveRoom").addEventListener("click",()=>{
+  const name = $("#roomName").value.trim();
+  if(!name){ toast("Room name required"); return; }
+  if(editingRoom){
+    const r = findRoom(editingRoom);
+    r.name = name; r.notes = $("#roomNotes").value.trim();
+    // apply cabinet transfers
+    let transfers = 0;
+    const moves = $$("#cabTransferList select").map(s=>({
+      cabId: s.dataset.cabid, targetRoomId: s.value
+    })).filter(m => m.targetRoomId !== r.id);
+    for(const m of moves){
+      const idx = r.cabinets.findIndex(c => c.id === m.cabId);
+      if(idx === -1) continue;
+      const target = findRoom(m.targetRoomId);
+      if(!target) continue;
+      const [cab] = r.cabinets.splice(idx, 1);
+      target.cabinets.push(cab);
+      transfers++;
+    }
+    saveState(); closeModal("roomModal"); render();
+    toast(transfers ? `Room updated · ${transfers} cabinet${transfers===1?"":"s"} moved` : "Room updated");
+  } else {
+    state.rooms.push({id:uid(),name,notes:$("#roomNotes").value.trim(),cabinets:[]});
+    saveState(); closeModal("roomModal"); render(); toast("Room added");
+  }
+});
+$("#deleteRoomBtn").addEventListener("click",()=>{
+  if(!editingRoom) return;
+  const r = findRoom(editingRoom);
+  closeModal("roomModal");
+  confirmDeleteRoom(r);
+});
+function confirmDeleteRoom(r){
+  const n = r.cabinets.reduce((a,c)=>a+c.items.length,0);
+  askConfirm(
+    `Delete room ${r.name}?`,
+    n>0 ? `This room has ${r.cabinets.length} cabinet(s) and ${n} item(s). All of them will be removed.`
+        : "This room is empty.",
+    ()=>{
+      state.rooms = state.rooms.filter(x=>x.id!==r.id);
+      saveState();
+      if(view.kind!=="rooms") go({kind:"rooms"}); else render();
+      toast("Room deleted");
+    }
+  );
+}
+
+/* ----- cabinet add/edit/delete ----- */
+function openAddCab(){
+  editingCab = null;
+  $("#cabName").value = ""; $("#cabNotes").value = ""; $("#cabType").value = "yellow";
+  $("#cabModalTitle").textContent = "Add cabinet";
+  $("#deleteCabBtn").style.display = "none";
+  openModal("cabModal");
+  setTimeout(()=>$("#cabName").focus(), 50);
+}
+function openEditCab(roomId, cabId){
+  const c = findCab(roomId, cabId); if(!c) return;
+  editingCab = { roomId, cabId };
+  $("#cabName").value = c.name || ""; $("#cabNotes").value = c.notes || "";
+  $("#cabType").value = c.type || "standard";
+  $("#cabModalTitle").textContent = "Edit cabinet";
+  $("#deleteCabBtn").style.display = "";
+  openModal("cabModal");
+}
+$("#saveCab").addEventListener("click",()=>{
+  const name = $("#cabName").value.trim();
+  if(!name){ toast("Cabinet name required"); return; }
+  if(editingCab){
+    const c = findCab(editingCab.roomId, editingCab.cabId);
+    c.name = name; c.type = $("#cabType").value; c.notes = $("#cabNotes").value.trim();
+  } else {
+    const r = findRoom(view.roomId); if(!r){ toast("Open a room first"); return; }
+    r.cabinets.push({id:uid(),name,type:$("#cabType").value,notes:$("#cabNotes").value.trim(),items:[]});
+  }
+  saveState(); closeModal("cabModal"); render(); toast(editingCab?"Cabinet updated":"Cabinet added");
+});
+$("#deleteCabBtn").addEventListener("click",()=>{
+  if(!editingCab) return;
+  const r = findRoom(editingCab.roomId), c = findCab(editingCab.roomId, editingCab.cabId);
+  closeModal("cabModal");
+  confirmDeleteCab(r, c);
+});
+function confirmDeleteCab(r, c){
+  askConfirm(
+    `Delete ${c.name}?`,
+    c.items.length>0 ? `This cabinet has ${c.items.length} item(s). They will be removed.`
+                     : "This cabinet is empty.",
+    ()=>{
+      r.cabinets = r.cabinets.filter(x=>x.id!==c.id);
+      saveState();
+      if(view.kind==="items") go({kind:"cabinets",roomId:r.id}); else render();
+      toast("Cabinet deleted");
+    }
+  );
+}
+
+/* ----- item add/edit ----- */
+function rebuildUnitDropdown(stateVal){
+  const sel = $("#itemUnit"); sel.innerHTML = "";
+  const list = UNITS[stateVal] || UNITS.unknown;
+  for(const u of list){ sel.append(new Option(u,u)); }
+  sel.value = defaultUnit(stateVal);
+}
+function setStateToggle(s){
+  $$("#stateToggle button").forEach(b=>b.classList.toggle("on", b.dataset.state===s));
+  rebuildUnitDropdown(s||"unknown");
+  $("#unitHint").textContent =
+    s==="liquid" ? "Unit choices: mL, L (liquid)." :
+    s==="solid"  ? "Unit choices: g, kg, mg (solid)." :
+    s==="gas"    ? "Unit choices: L, mol, cyl (gas)." :
+                   "Pick a state — units will switch to match.";
+}
+$$("#stateToggle button").forEach(b=>{
+  b.addEventListener("click",()=>setStateToggle(b.dataset.state));
+});
+
+function fillRoomSelect(sel, selectedRoomId){
+  sel.innerHTML = "";
+  if(state.rooms.length === 0){
+    sel.append(new Option("(no rooms — create one first)", ""));
+    return;
+  }
+  sel.append(new Option("— pick a room —", ""));
+  for(const r of state.rooms){
+    sel.append(new Option(`Room ${r.name}`, r.id));
+  }
+  if(selectedRoomId) sel.value = selectedRoomId;
+}
+function fillCabinetSelect(sel, roomId, selectedCabId){
+  sel.innerHTML = "";
+  const r = findRoom(roomId);
+  if(!r){
+    sel.append(new Option("— pick a room first —", ""));
+    return;
+  }
+  if(r.cabinets.length === 0){
+    sel.append(new Option("(no cabinets — create one first)", ""));
+    return;
+  }
+  sel.append(new Option("— pick a cabinet —", ""));
+  for(const c of r.cabinets){
+    sel.append(new Option(`${c.name} (${cabTypeLabel(c.type)})`, c.id));
+  }
+  if(selectedCabId) sel.value = selectedCabId;
+}
+$("#itemRoom") && $("#itemRoom").addEventListener("change",(e)=>{
+  fillCabinetSelect($("#itemCabinet"), e.target.value, null);
+});
+
+function clearItemForm(){
+  $("#lookupInput").value="";$("#itemName").value="";$("#itemCAS").value="";
+  $("#itemPurity").value="";$("#itemAmount").value="";$("#itemSupplier").value="";
+  $("#itemBarcode").value="";$("#itemNotes").value="";$("#itemShelf").value="";
+  setStateToggle(null);
+  $("#deleteItemBtn").style.display="none";
+  editing = null;
+  fillRoomSelect($("#itemRoom"), null);
+  fillCabinetSelect($("#itemCabinet"), null, null);
+  $("#lookupHint").textContent = "PubChem will fill name + CAS + state when found. You can also fill manually.";
+}
+function openAddItem(opts){
+  // opts: { roomId, cabId } — pre-select where to put the item (optional)
+  clearItemForm();
+  $("#itemModalTitle").textContent = "Add item";
+  // pre-select location if provided, otherwise use current view, otherwise leave blank
+  let preRoom = opts?.roomId || (view.kind === "items" || view.kind === "cabinets" ? view.roomId : null);
+  let preCab  = opts?.cabId  || (view.kind === "items" ? view.cabId : null);
+  fillRoomSelect($("#itemRoom"), preRoom);
+  fillCabinetSelect($("#itemCabinet"), preRoom, preCab);
+  openModal("itemModal");
+  setTimeout(()=>$("#lookupInput").focus(),50);
+}
+function openEditItem(itemId, ctx){
+  // ctx: { roomId, cabId } — required when called from search results
+  const roomId = ctx?.roomId ?? view.roomId;
+  const cabId  = ctx?.cabId  ?? view.cabId;
+  const it = findItem(roomId, cabId, itemId); if(!it) return;
+  clearItemForm();
+  $("#itemModalTitle").textContent = "Edit item";
+  $("#itemName").value = it.name||"";
+  $("#itemCAS").value  = it.cas||"";
+  $("#itemPurity").value = it.purity||"";
+  $("#itemAmount").value = it.amount ?? "";
+  $("#itemSupplier").value = it.supplier||"";
+  $("#itemBarcode").value = it.barcode||"";
+  $("#itemNotes").value = it.notes||"";
+  $("#itemShelf").value = it.shelf||"";
+  setStateToggle(it.state||null);
+  if(it.unit){ $("#itemUnit").value = it.unit; }
+  fillRoomSelect($("#itemRoom"), roomId);
+  fillCabinetSelect($("#itemCabinet"), roomId, cabId);
+  $("#deleteItemBtn").style.display = "";
+  editing = { roomId, cabId, itemId };
+  openModal("itemModal");
+}
+$("#deleteItemBtn").addEventListener("click",()=>{
+  if(!editing) return;
+  const c = findCab(editing.roomId, editing.cabId);
+  c.items = c.items.filter(i=>i.id!==editing.itemId);
+  saveState(); closeModal("itemModal"); render(); toast("Deleted");
+});
+$("#saveItem").addEventListener("click",()=>{
+  const stateBtn = $("#stateToggle .on");
+  const physState = stateBtn ? stateBtn.dataset.state : null;
+  const targetRoomId = $("#itemRoom").value;
+  const targetCabId  = $("#itemCabinet").value;
+  if(!targetRoomId){ toast("Pick a room"); return; }
+  if(!targetCabId){  toast("Pick a cabinet"); return; }
+  const data = {
+    name:    $("#itemName").value.trim(),
+    cas:     $("#itemCAS").value.trim(),
+    state:   physState,
+    purity:  $("#itemPurity").value.trim(),
+    amount:  $("#itemAmount").value === "" ? "" : Number($("#itemAmount").value),
+    unit:    $("#itemUnit").value,
+    supplier:$("#itemSupplier").value.trim(),
+    shelf:   $("#itemShelf").value.trim(),
+    barcode: $("#itemBarcode").value.trim(),
+    notes:   $("#itemNotes").value.trim(),
+    updated: new Date().toISOString(),
+  };
+  if(!data.name && !data.cas){ toast("Need a name or CAS"); return; }
+  const targetCab = findCab(targetRoomId, targetCabId);
+  if(!targetCab){ toast("Selected cabinet was removed"); return; }
+
+  if(editing){
+    const oldCab = findCab(editing.roomId, editing.cabId);
+    const it = oldCab && oldCab.items.find(i=>i.id===editing.itemId);
+    if(!it){ toast("Item went missing"); return; }
+    Object.assign(it, data);
+    if(targetCabId !== editing.cabId){
+      // move between cabinets / rooms
+      oldCab.items = oldCab.items.filter(i=>i.id !== it.id);
+      targetCab.items.push(it);
+      saveState(); closeModal("itemModal");
+      // if we were viewing the old cabinet, follow the item
+      if(view.kind === "items" && view.cabId === editing.cabId){
+        go({kind:"items", roomId: targetRoomId, cabId: targetCabId});
+      } else { render(); }
+      toast("Moved");
+      return;
+    }
+  } else {
+    targetCab.items.push({ id: uid(), created: data.updated, ...data });
+  }
+  saveState(); closeModal("itemModal"); render(); toast("Saved");
+});
+
+/* ----------------------- PubChem lookup ----------------------- */
+const PUBCHEM = "https://pubchem.ncbi.nlm.nih.gov/rest/pug";
+async function jget(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+function looksLikeCAS(s){ return /^\d{2,7}-\d{2}-\d$/.test(String(s).trim()); }
+
+async function pubchemLookup(query){
+  const q = String(query||"").trim(); if(!q) return null;
+  let cid = null;
+  try{
+    const j = await jget(`${PUBCHEM}/compound/name/${encodeURIComponent(q)}/cids/JSON`);
+    cid = j?.IdentifierList?.CID?.[0];
+  }catch(_){}
+  if(!cid) return null;
+  let props = {};
+  try{
+    const j = await jget(`${PUBCHEM}/compound/cid/${cid}/property/IUPACName,MolecularFormula,MolecularWeight,Title/JSON`);
+    props = j?.PropertyTable?.Properties?.[0] ?? {};
+  }catch(_){}
+  let cas = null, displayName = props.Title || props.IUPACName || q;
+  try{
+    const j = await jget(`${PUBCHEM}/compound/cid/${cid}/synonyms/JSON`);
+    const syns = j?.InformationList?.Information?.[0]?.Synonym || [];
+    for(const s of syns){ if(looksLikeCAS(s)){ cas = s; break; } }
+    if(!props.Title && syns[0]) displayName = syns[0];
+  }catch(_){}
+  let phystate = guessStateFromName(displayName) || guessStateFromName(q);
+  if(!phystate){
+    try{
+      const v = await jget(`https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound/${cid}/JSON?heading=Physical+Description`);
+      const txt = JSON.stringify(v).toLowerCase();
+      if(/colorless\s+liquid|clear\s+liquid|oily\s+liquid|liquid\b/.test(txt)) phystate = "liquid";
+      else if(/white\s+(crystalline|powder|solid)|crystals?\b|powder\b|solid\b/.test(txt)) phystate = "solid";
+      else if(/colorless\s+gas|gas\b/.test(txt)) phystate = "gas";
+    }catch(_){}
+  }
+  return { cid, name: displayName, cas, state: phystate, formula: props.MolecularFormula, mw: props.MolecularWeight };
+}
+
+$("#lookupBtn").addEventListener("click", async ()=>{
+  const q = $("#lookupInput").value.trim();
+  if(!q){ toast("Type or scan something first"); return; }
+  $("#lookupHint").textContent = "Looking up in PubChem…";
+  try{
+    const hit = await pubchemLookup(q);
+    if(!hit){ $("#lookupHint").textContent = "No match in PubChem. Fill the fields manually."; return; }
+    if(hit.name) $("#itemName").value = hit.name;
+    if(hit.cas)  $("#itemCAS").value  = hit.cas;
+    if(hit.state) setStateToggle(hit.state);
+    let extra = [];
+    if(hit.formula) extra.push(hit.formula);
+    if(hit.mw) extra.push(`MW ${hit.mw}`);
+    $("#lookupHint").textContent = `Filled from PubChem (CID ${hit.cid})${extra.length?` — ${extra.join(", ")}`:""}.`;
+  }catch(e){
+    console.warn(e);
+    $("#lookupHint").textContent = "Lookup failed (check network). Fill the fields manually.";
+  }
+});
+
+/* ----------------------- camera barcode scanner ----------------------- */
+$("#scanBtn").addEventListener("click", async ()=>{
+  if(!window.Html5Qrcode){ toast("Scanner library failed to load"); return; }
+  $("#scannerHost").style.display = "block";
+  if(!scanner){ scanner = new Html5Qrcode("scannerView"); }
+  try{
+    await scanner.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 280, height: 160 } },
+      (decodedText)=>{
+        $("#lookupInput").value = decodedText;
+        stopScanner().then(()=>$("#lookupBtn").click());
+      },
+      ()=>{}
+    );
+  }catch(e){
+    console.warn(e);
+    toast("Camera blocked — open this page over http(s):// to scan");
+    $("#scannerHost").style.display = "none";
+  }
+});
+async function stopScanner(){
+  $("#scannerHost").style.display = "none";
+  if(scanner){ try{ await scanner.stop(); await scanner.clear(); }catch(_){} }
+}
+$("#stopScanBtn").addEventListener("click", stopScanner);
+
+/* ----------------------- global search ----------------------- */
+const searchEl = document.getElementById("globalSearch");
+searchEl.addEventListener("input", (e)=>{
+  const q = e.target.value;
+  if(!q.trim()){ if(view.kind==="search") go({kind:"rooms"}); return; }
+  view = { kind:"search", query: q };
+  render();
+});
+searchEl.addEventListener("keydown", (e)=>{ if(e.key==="Escape"){ e.target.value=""; go({kind:"rooms"}); }});
+
+/* ----------------------- Excel export ----------------------- */
+$("#exportBtn").addEventListener("click", ()=>{
+  const rows = [];
+  for(const r of state.rooms){
+    for(const c of r.cabinets){
+      for(const it of c.items){
+        rows.push({
+          "Room": r.name, "Cabinet": c.name, "Cabinet type": c.type,
+          "Shelf / level": it.shelf,
+          "Name of Item": it.name, "CAS number": it.cas, "State": it.state,
+          "Purity ": it.purity,
+          "Quantity": (it.amount!=null && it.amount!=="") ? `${it.amount} ${it.unit||""}`.trim() : "",
+          "Manufracturer/ Supplier ": it.supplier,
+          "Catalog/Barcode": it.barcode,
+          "Special notes/Status ": it.notes,
+          "Updated": it.updated,
+        });
+      }
+    }
+  }
+  if(rows.length === 0){ toast("Nothing to export"); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Inventory");
+  XLSX.writeFile(wb, "lam-chem-inventory.xlsx");
+});
+
+/* ----------------------- Excel import ----------------------- */
+$("#importFile").addEventListener("change", async (e)=>{
+  const file = e.target.files[0]; if(!file) return;
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:"array" });
+    // pull rows from every sheet (LAM Chemicals + Solvents both)
+    const allRows = []; const headerSet = new Set();
+    for(const sheetName of wb.SheetNames){
+      const ws = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval:"" });
+      for(const r of rows){
+        r.__sheet = sheetName.trim();
+        allRows.push(r);
+        Object.keys(r).forEach(k=>{ if(k!=="__sheet") headerSet.add(k); });
+      }
+    }
+    if(allRows.length === 0){ toast("File looks empty"); return; }
+    pendingImport = { rows: allRows, headers: Array.from(headerSet) };
+    showImportPreview();
+  }catch(err){
+    console.warn(err); toast("Could not read file");
+  }finally{
+    e.target.value = "";
+  }
+});
+
+const FIELD_OPTIONS = [
+  ["", "(ignore)"],
+  ["location","Location (room + cabinet + shelf — auto-parsed)"],
+  ["room","Room"],
+  ["cabinet","Cabinet"],
+  ["cabinetType","Cabinet type"],
+  ["shelf","Shelf / level"],
+  ["name","Name of item / chemical"],
+  ["cas","CAS number"],
+  ["state","Physical state"],
+  ["purity","Purity"],
+  ["quantity","Quantity (amount + unit)"],
+  ["amount","Amount only"],
+  ["unit","Unit only"],
+  ["supplier","Manufacturer / Supplier"],
+  ["barcode","Catalog / barcode"],
+  ["notes","Notes / status"],
+];
+function guessField(h){
+  const k = h.toLowerCase().trim();
+  if(/^location$|location/.test(k)) return "location";
+  if(/^room$|room|lab/.test(k)) return "room";
+  if(/cabinet.*type|^type$/.test(k)) return "cabinetType";
+  if(/cabinet|shelf/.test(k)) return "cabinet";
+  if(/^name|of item|compound|chemical|reagent|product/.test(k)) return "name";
+  if(/cas/.test(k)) return "cas";
+  if(/state|phase|form/.test(k)) return "state";
+  if(/purity|grade/.test(k)) return "purity";
+  if(/quantity|amount|qty|mass|volume/.test(k)) return "quantity";
+  if(/^unit/.test(k)) return "unit";
+  if(/vendor|supplier|brand|manufacturer|manufracturer/.test(k)) return "supplier";
+  if(/barcode|catalog|sku|product.*code/.test(k)) return "barcode";
+  if(/note|comment|remark|status/.test(k)) return "notes";
+  if(/^si.?no|^no\.?$|^#$/.test(k)) return "";
+  return "";
+}
+function showImportPreview(){
+  const host = $("#importPreview"); host.innerHTML = "";
+  const tbl = el("table");
+  tbl.append(el("thead",{},[el("tr",{},[
+    el("th",{},"Spreadsheet column"),el("th",{},"Map to"),el("th",{},"Sample"),
+  ])]));
+  const tbody = el("tbody");
+  for(const h of pendingImport.headers){
+    const sel = el("select",{class:"map", "data-h":h});
+    for(const [v,label] of FIELD_OPTIONS){ sel.append(new Option(label,v)); }
+    sel.value = guessField(h);
+    const sample = pendingImport.rows.slice(0,3).map(r=>String(r[h]??"")).filter(Boolean).join(" · ");
+    tbody.append(el("tr",{},[
+      el("td",{},h),
+      el("td",{},sel),
+      el("td",{class:"hint"}, sample || "—"),
+    ]));
+  }
+  tbl.append(tbody);
+  host.append(el("div",{class:"tablewrap"},tbl));
+  openModal("importModal");
+}
+
+function cabTypeFromName(name){
+  const n = (name||"").toLowerCase();
+  if(/yellow/.test(n)) return "yellow";
+  if(/vented/.test(n)) return "vented";
+  if(/fridge/.test(n)) return "fridge";
+  if(/freezer/.test(n)) return "freezer";
+  if(/desiccator|dessicator/.test(n)) return "desiccator";
+  if(/glove/.test(n)) return "glovebox";
+  return "standard";
+}
+
+$("#confirmImport").addEventListener("click", ()=>{
+  if(!pendingImport) return;
+  const map = {};
+  $$("#importPreview select.map").forEach(s=>{ if(s.value) map[s.dataset.h] = s.value; });
+  const defaultRoom = $("#defaultRoom").value.trim() || "Unassigned";
+
+  let added = 0;
+  for(const row of pendingImport.rows){
+    const v = (field)=>{
+      const col = Object.entries(map).find(([,f])=>f===field)?.[0];
+      return col ? String(row[col] ?? "").trim() : "";
+    };
+    const mapped = new Set(Object.keys(map));
+    const extra = pendingImport.headers.filter(h=>!mapped.has(h)).map(h=>{
+      const val = String(row[h]??"").trim(); return val ? `${h}: ${val}` : "";
+    }).filter(Boolean).join("; ");
+
+    // Location handling
+    let roomName, cabName, shelf;
+    const locStr = v("location");
+    if(locStr){
+      const p = parseLocation(locStr);
+      roomName = p.room || v("room") || defaultRoom;
+      cabName  = p.cabinet || v("cabinet") || "Unspecified";
+      shelf    = p.shelf || v("shelf") || "";
+    } else {
+      roomName = v("room") || defaultRoom;
+      cabName  = v("cabinet") || "Unspecified";
+      shelf    = v("shelf") || "";
+    }
+
+    const cabType = (v("cabinetType") || cabTypeFromName(cabName)).toLowerCase();
+    let room = state.rooms.find(r=>r.name === roomName);
+    if(!room){ room = {id:uid(),name:roomName,notes:"",cabinets:[]}; state.rooms.push(room); }
+    let cab = room.cabinets.find(c=>c.name === cabName);
+    if(!cab){ cab = {id:uid(),name:cabName,type:cabType,notes:"",items:[]}; room.cabinets.push(cab); }
+
+    // amount/unit
+    let amount = null, unit = null;
+    const qtyStr = v("quantity");
+    if(qtyStr){ const p = parseQty(qtyStr); amount = p.amount; unit = p.unit; }
+    if(amount===null){
+      const a = v("amount");
+      amount = a ? Number(String(a).replace(/[^0-9.\-eE]/g,"")) : null;
+    }
+    if(!unit){ unit = normUnit(v("unit")) || null; }
+
+    // state
+    let s = (v("state")||"").toLowerCase();
+    if(!["liquid","solid","gas"].includes(s)) s = stateFromUnit(unit) || guessStateFromName(v("name"));
+    if(!s){
+      const sheet = (row.__sheet || "").toLowerCase();
+      if(/solvent/.test(sheet)) s = "liquid";
+    }
+
+    cab.items.push({
+      id: uid(),
+      name: v("name"),
+      cas: v("cas"),
+      state: s || null,
+      purity: fmtPurity(v("purity")),
+      amount: Number.isFinite(amount) ? amount : null,
+      unit: unit || (s ? defaultUnit(s) : null),
+      supplier: v("supplier"),
+      shelf,
+      barcode: v("barcode"),
+      notes: [v("notes"), extra].filter(Boolean).join(" — "),
+      originalLocation: locStr || "",
+      created: new Date().toISOString(),
+      updated: new Date().toISOString(),
+    });
+    added++;
+  }
+  pendingImport = null;
+  saveState(); closeModal("importModal"); render();
+  toast(`Imported ${added} item${added===1?"":"s"}`);
+});
+
+/* ----------------------- reset ----------------------- */
+$("#resetBtn").addEventListener("click",()=>{
+  askConfirm("Reset all data?",
+    "This wipes everything in this browser and reloads the inventory from inventory-data.js.",
+    ()=>{
+      localStorage.removeItem(STORAGE_KEY);
+      state = loadState();
+      go({kind:"rooms"});
+      toast("Reset");
+    });
+});
+
+/* ----------------------- bootstrap ----------------------- */
+render();
+</script>
+</body>
+</html>
