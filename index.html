@@ -462,7 +462,8 @@ async function saveState(){
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }catch(e){/* ignore quota */}
   const { error } = await _sb.from('inventory').upsert({ id: SB_ROW, data: state });
-  if(error) toast('⚠️ Sync error: ' + error.message);
+  if(error){ toast('⚠️ Sync error: ' + error.message); }
+  else { if(typeof _lastSeen !== 'undefined') _lastSeen = JSON.stringify(state); }
 }
 const uid = () => Math.random().toString(36).slice(2,10);
 
@@ -1562,6 +1563,23 @@ $("#resetBtn").addEventListener("click",()=>{
         render();
       })
     .subscribe();
+
+  // Polling fallback: sync every 10 s in case realtime subscription is inactive
+  let _lastSeen = JSON.stringify(state);
+  setInterval(async () => {
+    try {
+      const { data: row } = await _sb.from('inventory').select('data').eq('id', SB_ROW).maybeSingle();
+      if(row && row.data){
+        const fresh = JSON.stringify(row.data);
+        if(fresh !== _lastSeen){
+          _lastSeen = fresh;
+          state = row.data;
+          try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+          render();
+        }
+      }
+    } catch(e){}
+  }, 10000);
 })();
 </script>
 </body>
