@@ -11,6 +11,8 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.10/html5-qrcode.min.js"></script>
 <!-- Initial seed data (parsed from "LAM Chemical Inventory current.xlsx") -->
 <script src="inventory-data.js"></script>
+<!-- Supabase real-time sync -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
 <style>
   :root{
@@ -413,9 +415,15 @@
    LAM Chem Inventory — single-page app
    ========================================================================= */
 
-const STORAGE_KEY = "chem-inv-v2";   // bumped from v1 — old demo data is replaced
+const STORAGE_KEY = "chem-inv-v2";   // kept for local cache
 
-let state = loadState();
+/* --- Supabase --- */
+const SUPABASE_URL = 'https://enrlqidvdrxgtaagjcfp.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_na0QTdW2yy2xvv80SZSFfQ_9BuSRKBd';
+const _sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const SB_ROW = 1; // single-row pattern — entire state stored in one jsonb cell
+
+let state = { rooms: [] };
 let view = { kind: "rooms" };
 let editMode = false;
 let editing = null;
@@ -449,14 +457,12 @@ function loadState(){
   }
   return { rooms: [] };
 }
-function saveState(){
+async function saveState(){
   try{
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }catch(e){
-    if(e.name==="QuotaExceededError"||e.name==="NS_ERROR_DOM_QUOTA_REACHED"){
-      toast("Storage full — export your data to free up space.");
-    }
-  }
+  }catch(e){/* ignore quota */}
+  const { error } = await _sb.from('inventory').upsert({ id: SB_ROW, data: state });
+  if(error) toast('⚠️ Sync error: ' + error.message);
 }
 const uid = () => Math.random().toString(36).slice(2,10);
 
@@ -1518,14 +1524,45 @@ $("#resetBtn").addEventListener("click",()=>{
         XLSX.writeFile(wb, `lam-chem-backup-${new Date().toISOString().slice(0,10)}.xlsx`);
       }
       localStorage.removeItem(STORAGE_KEY);
-      state = loadState();
+      state = window.LAM_SEED && Array.isArray(window.LAM_SEED.rooms)
+        ? JSON.parse(JSON.stringify(window.LAM_SEED))
+        : { rooms: [] };
+      _sb.from('inventory').upsert({ id: SB_ROW, data: state });
       go({kind:"rooms"});
       toast("Reset complete — backup downloaded");
     });
 });
 
 /* ----------------------- bootstrap ----------------------- */
-render();
+(async () => {
+  const { data: row, error } = await _sb
+    .from('inventory').select('data').eq('id', SB_ROW).maybeSingle();
+  if(error){
+    toast('⚠️ Could not load from Supabase — using local data');
+    state = loadState();
+  } else if(row && row.data && Array.isArray(row.data.rooms)){
+    state = row.data;
+    // also keep a local cache so offline fallback works
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+  } else {
+    // first run — seed from inventory-data.js then push to Supabase
+    state = window.LAM_SEED && Array.isArray(window.LAM_SEED.rooms)
+      ? JSON.parse(JSON.stringify(window.LAM_SEED))
+      : { rooms: [] };
+    await _sb.from('inventory').upsert({ id: SB_ROW, data: state });
+  }
+  render();
+  // real-time: update UI when another browser writes
+  _sb.channel('inv-sync')
+    .on('postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'inventory', filter: `id=eq.${SB_ROW}` },
+      payload => {
+        state = payload.new.data;
+        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch(e){}
+        render();
+      })
+    .subscribe();
+})();
 </script>
 </body>
 </html>
